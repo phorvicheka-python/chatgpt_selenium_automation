@@ -10,7 +10,7 @@ from selenium.webdriver.common.keys import Keys
 
 class ChatGPTAutomation:
 
-    def __init__(self, chrome_path, chrome_driver_path):
+    def __init__(self, chrome_path, chrome_driver_path, is_wait_for_human_verification=True):
         """
         This constructor automates the following steps:
         1. Open a Chrome browser with remote debugging enabled at a specified URL.
@@ -27,7 +27,8 @@ class ChatGPTAutomation:
         url = r"https://chat.openai.com"
         free_port = self.find_available_port()
         self.launch_chrome_with_remote_debugging(free_port, url)
-        self.wait_for_human_verification()
+        if is_wait_for_human_verification:
+            self.wait_for_human_verification()
         self.driver = self.setup_webdriver(free_port)
         self.cookie = self.get_cookie()
 
@@ -70,32 +71,65 @@ class ChatGPTAutomation:
         cookie = [elem for elem in cookies if elem["name"] == '__Secure-next-auth.session-token'][0]['value']
         return cookie
 
-    def send_prompt_to_chatgpt(self, prompt):
+    def send_prompt_to_chatgpt(self, prompt, check_every_n_second=2, timeout=60):
         """ Sends a message to ChatGPT and waits for 20 seconds for the response """
 
         input_box = self.driver.find_element(by=By.XPATH, value='//textarea[contains(@id, "prompt-textarea")]')
-        self.driver.execute_script(f"arguments[0].value = '{prompt}';", input_box)
+        # self.driver.execute_script(f"arguments[0].value = '{prompt}';", input_box)
+        # Using JavaScript to set the value directly, avoiding issues with special characters
+        self.driver.execute_script("arguments[0].value = arguments[1];", input_box, prompt)
         input_box.send_keys(Keys.RETURN)
         input_box.submit()
-        self.check_response_ended()
+        self.check_response_ended(check_every_n_second, timeout)
 
-    def check_response_ended(self):
+    def check_response_ended(self, check_every_n_second=2, timeout=60):
         """ Checks if ChatGPT response ended """
+
         start_time = time.time()
-        while len(self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')[-1].find_elements(
-                by=By.CSS_SELECTOR, value='button.text-token-text-tertiary')) < 1:
-            time.sleep(0.5)
-            # Exit the while loop after 60 seconds anyway
-            if time.time() - start_time > 60:
+        while True:
+            time.sleep(check_every_n_second)  # Check every 2 seconds
+            # Check if the "stop" button is present and the "send" button is absent
+            stop_button = self.driver.find_elements(by=By.CSS_SELECTOR, value='button[data-testid*="stop-button"]')
+            send_button = self.driver.find_elements(by=By.CSS_SELECTOR, value='button[data-testid*="send-button"]')
+
+            if not stop_button and send_button:
+                # "Stop" button is not present and "Send" button is present, indicating the response has ended
                 break
-        time.sleep(1)  # the length should be =4, so it's better to wait a moment to be sure it's really finished
+
+            # Check if specific elements inside the last message are present
+            last_message = self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')[-1]
+            buttons = last_message.find_elements(by=By.CSS_SELECTOR, value='span[data-state="closed"] > button')
+            if buttons:
+                # Specific elements inside the last message are present, indicating the response is fully loaded
+                break
+
+            if time.time() - start_time > timeout:
+                # Exit the loop after the specified timeout duration
+                break
+
+        # Add a short sleep to ensure all elements are fully loaded
+        time.sleep(1)
+
+    # def check_response_ended(self):
+    #     """ Checks if ChatGPT response ended """
+    #     start_time = time.time()
+    #     while len(self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')[-1].find_elements(
+    #             by=By.CSS_SELECTOR, value='button.text-token-text-tertiary')) < 1:
+    #         time.sleep(0.5)
+    #         # Exit the while loop after 60 seconds anyway
+    #         if time.time() - start_time > 60:
+    #             break
+    #     time.sleep(1)  # the length should be =4, so it's better to wait a moment to be sure it's really finished
 
     def return_chatgpt_conversation(self):
         """
         :return: returns a list of items, even items are the submitted questions (prompts) and odd items are chatgpt response
         """
-
-        return self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')
+        # Fetch the elements using the correct CSS selector
+        conversation_elements = self.driver.find_elements(by=By.CSS_SELECTOR, value='div[class*="group/conversation-turn"]')
+        print(f"Number of conversation elements found: {len(conversation_elements)}")
+        
+        return conversation_elements
 
     def save_conversation(self, file_name):
         """
@@ -120,11 +154,27 @@ class ChatGPTAutomation:
                 file.write(
                     f"prompt: {chatgpt_conversation[i].text}\nresponse: {chatgpt_conversation[i + 1].text}\n\n{delimiter}\n\n")
 
-    def return_last_response(self):
-        """ :return: the text of the last chatgpt response """
+    # def return_last_response(self):
+    #     """ :return: the text of the last chatgpt response """
 
-        response_elements = self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')
-        return response_elements[-1].text
+    #     response_elements = self.driver.find_elements(by=By.CSS_SELECTOR, value='div.text-base')
+    #     return response_elements[-1].text
+    
+    def return_last_response(self):
+        """Return the text of the last chatgpt response."""
+        try:
+            # Find all div elements with class "text-message" and attribute data-message-author-role="assistant"
+            response_elements = self.driver.find_elements(by=By.CSS_SELECTOR, value='div[data-message-author-role="assistant"].text-message')
+
+            # Check if any response elements were found
+            if response_elements:
+                # Get the last response element and return its text
+                return response_elements[-1].text
+            else:
+                return "No response found"
+        except Exception as e:
+            return f"Error: {e}"
+
 
     @staticmethod
     def wait_for_human_verification():
